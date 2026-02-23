@@ -1,0 +1,11 @@
+from manual_qa import ManualQA
+
+manual = ManualQA(
+    pdf_path="/path/to/your/GR86_manual.pdf",
+    cache_dir=".manual_cache",
+    model="gpt-4.1-mini",
+)
+
+res = manual.ask("What is the wheel lug torque?")
+print(res["answer"])         # includes (p. N)
+print(res["pages_used"])     # list of exact pages used

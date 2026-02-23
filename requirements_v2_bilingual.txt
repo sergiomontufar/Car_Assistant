@@ -1,0 +1,38 @@
+# ----------------------------
+# Jetson Orin / JetPack 6 (R36) stable pins
+# NOTE: torch is installed separately via NVIDIA wheel (DO NOT pip install torch here)
+# ----------------------------
+
+# Critical: keep NumPy <2 because NVIDIA torch wheels are built against NumPy 1.x
+numpy<2
+
+# Audio I/O
+pyaudio
+soundfile
+webrtcvad
+
+# Networking
+requests
+
+# STT
+faster-whisper
+
+# XTTS (Coqui)
+# Install without deps if you still hit sudachipy builds:
+#   pip install "TTS==0.22.0" --no-deps
+# then pip install the deps below
+TTS==0.22.0
+
+# XTTS deps (keep these explicit so pip doesn't drag in extra stuff)
+scipy
+librosa
+numba
+llvmlite
+transformers
+sentencepiece
+unidecode
+tqdm
+pydub
+
+# Optional but commonly helpful for logging/debug
+rich
