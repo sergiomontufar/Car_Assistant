@@ -1,25 +1,30 @@
 Car Assistant (hands-free voice)
 ================================
 
-Hands-free in-car assistant that listens for a wake word, transcribes speech with Whisper, answers with GPT (general Q&A or GR86 manual-grounded), and speaks replies back with OpenAI TTS. Works in English or Spanish and keeps listening until you tell it to stop.
+Hands-free in-car assistant for GR86 support. It listens continuously, transcribes speech with Whisper, answers with GPT, and replies with TTS audio. It supports:
+- General conversation mode.
+- Manual-grounded mode with page citations from the GR86 PDF manual.
 
 Main capabilities
 -----------------
-- Always-on mic loop with WebRTC VAD to detect utterances without a fixed window.
-- Wake words: "Computer" / "Computadora"; quick commands: "Silence"/"Silencio", "Stop"/"Detente", "Status"/"Estatus".
-- Two answer modes: general GPT chat, or manual-grounded answers when you say "Respond based on the manual"/"Responde en base al manual".
-- Manual mode builds a TF-IDF index of the GR86 PDF manual and cites pages; falls back to general chat if nothing relevant is found.
-- TTS playback with automatic mic mute/unmute to avoid echo loops.
+- Continuous mic stream with WebRTC VAD utterance detection (no fixed recording window).
+- Voice commands: wake, pause listening, status, and stop.
+- Manual QA pipeline with two retrieval backends:
+  - `tfidf` (default, `manual_qa.py`)
+  - `vectors` (OpenAI embeddings, `manual_qa_vectors.py`)
+- Spoken responses with mic mute/unmute during playback to reduce echo loops.
 
 Prerequisites
 -------------
-- Python 3.10+ recommended.
-- Working microphone.
-- System deps:
-  - PortAudio headers for `pyaudio` (e.g., `sudo apt-get install portaudio19-dev`).
-  - `webrtcvad` wheels are available on most Linux distros; if building from source, ensure a C compiler is present.
-- OpenAI API key with access to Whisper and GPT models.
-- GR86 manual PDF available locally (default path is `~/Rowdy_chatbot/GR86 user manual.pdf`).
+- Python 3.8+ (Jetson-friendly).
+- Working microphone and speaker output.
+- System dependency for PyAudio:
+  - `sudo apt-get install portaudio19-dev`
+- OpenAI API key with access to:
+  - STT (`whisper-1`)
+  - TTS
+  - Chat Completions
+  - Embeddings (only when using `--manual_retriever vectors`)
 
 Setup
 -----
@@ -42,35 +47,57 @@ pip install -r requirements.txt
 ```
 
 4) Provide your OpenAI API key (pick one):
-- Export: `export OPENAI_API_KEY=sk-...`
+- Export in shell: `export OPENAI_API_KEY=sk-...`
 - Or create `.env` in this folder with `OPENAI_API_KEY=sk-...`
-- Or store the key file at `~/Rowdy_chatbot/OPEN_AI_KEY/key.txt` (default fallback)
+- Or store key file at `~/Rowdy_chatbot/OPEN_AI_KEY/key.txt`
 - Or pass `--api_key_file /path/to/keyfile`
 
-Optional: if your GR86 manual is elsewhere, set `--pdf_path /custom/path.pdf` or update `MANUAL_PATH` in `car_assistant_GPT_v4.py`.
+5) Ensure the GR86 manual PDF path is correct:
+- Default: `GR86 user manual.pdf` in project root.
+- Or pass `--pdf_path /full/path/to/GR86_user_manual.pdf`.
 
-How to run
-----------
-In the activated venv:
+How to run (`car_assistant_GPT_v5.py`)
+--------------------------------------
+Default (TF-IDF retriever):
 ```
-python -u car_assistant_GPT_v4.py --lang en
+PYTHONPATH=. python3 -u car_assistant_GPT_v5.py
 ```
-- `--lang {en,es}` selects STT/LLM language.
-- `--pdf_path` points to the GR86 manual PDF.
-- `--manual_cache` controls where the TF-IDF index is stored (default `.manual_cache`).
-- `--manual_topk` and `--manual_min_score` tune manual retrieval.
+
+Vector retriever:
+```
+PYTHONPATH=. python3 -u car_assistant_GPT_v5.py --manual_retriever vectors
+```
+
+Vector retriever with explicit embedding model:
+```
+PYTHONPATH=. python3 -u car_assistant_GPT_v5.py --manual_retriever vectors --manual_embedding_model text-embedding-3-small
+```
+
+Useful options
+--------------
+- `--lang {en,es}`: STT/prompt language.
+- `--pdf_path`: manual PDF location.
+- `--manual_model`: answer model for manual QA.
+- `--manual_retriever {tfidf,vectors}`: retrieval backend.
+- `--manual_embedding_model`: embedding model (vectors backend only).
+- `--manual_cache`: cache directory for manual index files.
+- `--manual_topk`: number of retrieved pages.
+- `--manual_min_score`: minimum retrieval score cutoff.
+- `--vad_aggr`, `--silence_ms`, `--frame_ms`: voice activity tuning.
+
+Voice command flow
+------------------
+- Say `Computer` for general mode.
+- Say `Instruction` or `Instructions` for manual mode.
+- In manual mode, follow-up questions stay in manual mode until you say commands such as `Computer`, `Stop`, or `Silence`.
+- `Status` reports current state flags in terminal and voice.
 - `Ctrl+C` to exit.
 
-Usage flow
-----------
-- Wait for: `Car Assistant (ChatGPT) hands-free. Say 'Computer' / 'Computadora' to wake.`
-- Say the wake word, then ask your question.
-- Say "Silence"/"Stop" to pause or stop listening; "Status" reports awake/listening flags.
-- To force manual-grounded answers, include "Respond based on the manual" (or the Spanish variant) in your request.
-
-Notes and tips
---------------
-- First manual-grounded question triggers PDF indexing; this may take a moment and writes to `.manual_cache`.
-- If audio fails to play, ensure `paplay` (PulseAudio) or `aplay` (ALSA) is installed.
-- Avoid running from inside a container without audio devices unless you provide virtual audio input/output.
-- For troubleshooting VAD sensitivity, adjust `--vad_aggr` (0–3) and `--silence_ms`.
+Notes
+-----
+- First manual query may take longer (index build + cache write).
+- If playback fails, ensure `paplay` or `aplay` exists.
+- For debugging manual routing, the app prints:
+  - selected retriever backend
+  - `-> Using manual QA: ...`
+  - `-> Manual pages_used: [...]`

@@ -17,7 +17,12 @@ Env:
 Usage:
   source ~/Rowdy/bin/activate
   # put your key in env OR a file (see below)
-  PYTHONPATH=. python -u car_assistant_GPT_v4.py --record_seconds 10
+  # default manual retrieval backend (TF-IDF)
+  PYTHONPATH=. python -u car_assistant_GPT_v5.py
+  # vector retrieval backend
+  PYTHONPATH=. python -u car_assistant_GPT_v5.py --manual_retriever vectors
+  # vector retrieval with explicit embedding model
+  PYTHONPATH=. python -u car_assistant_GPT_v5.py --manual_retriever vectors --manual_embedding_model text-embedding-3-small
 
 API key:
   - Preferred: set env OPENAI_API_KEY
@@ -44,6 +49,7 @@ import webrtcvad
 from openai import OpenAI
 
 from manual_qa import ManualQA
+from manual_qa_vectors import ManualQAVectors
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -211,14 +217,34 @@ def _needs_fallback(answer: str, pages_used: list[int]) -> bool:
     return (not answer) or any(t in al for t in triggers)
 
 
+MANUAL_TRIGGERS = (
+    "respond based on the manual",
+    "responde en base al manual",
+    "responde usando el manual",
+    "based on the manual",
+    "according to the manual",
+    "from the manual",
+)
+
+
 def wants_manual(question: str) -> bool:
     ql = question.lower()
-    return (
-        "respond based on the manual" in ql
-        or "responde en base al manual" in ql
-        or "responde en base al manual" in ql
-        or "responde usando el manual" in ql
-    )
+    return any(trigger in ql for trigger in MANUAL_TRIGGERS)
+
+
+def strip_manual_trigger(question: str) -> str:
+    """Return the question with manual trigger phrases removed for cleaner retrieval."""
+    q = question.strip()
+    ql = q.lower()
+    for trigger in sorted(MANUAL_TRIGGERS, key=len, reverse=True):
+        if trigger in ql:
+            # Remove trigger and surrounding punctuation/commas
+            idx = ql.index(trigger)
+            before = q[:idx].strip().rstrip(",").strip()
+            after = q[idx + len(trigger) :].strip().lstrip(",").strip()
+            q = f"{before} {after}".strip() if before else after
+            ql = q.lower()
+    return q.strip() or question.strip()
 
 
 def main() -> None:
@@ -227,7 +253,19 @@ def main() -> None:
     parser.add_argument("--api_key_file", type=str, default=None, help="Optional path to file containing OpenAI API key.")
     parser.add_argument("--env_file", type=str, default=None, help="Optional .env file path (KEY=VALUE).")
     parser.add_argument("--pdf_path", type=str, default=str(MANUAL_PATH), help="Path to GR86 manual PDF.")
-    parser.add_argument("--manual_model", type=str, default="gpt-4.1-mini", help="Model for manual QA.")
+    parser.add_argument("--manual_model", type=str, default="gpt-4o-mini", help="Model for manual QA (Chat Completions).")
+    parser.add_argument(
+        "--manual_retriever",
+        choices=["tfidf", "vectors"],
+        default="tfidf",
+        help="Manual retrieval backend: tfidf (default) or vectors.",
+    )
+    parser.add_argument(
+        "--manual_embedding_model",
+        type=str,
+        default="text-embedding-3-small",
+        help="Embedding model used when --manual_retriever=vectors.",
+    )
     parser.add_argument("--general_model", type=str, default="gpt-5.2", help="Model for general QA.")
     parser.add_argument("--manual_cache", type=str, default=".manual_cache", help="Cache dir for manual index.")
     parser.add_argument("--manual_topk", type=int, default=6, help="Top-K pages to retrieve from manual.")
@@ -240,11 +278,25 @@ def main() -> None:
     api_key = get_api_key(args.env_file or args.api_key_file)
     client = OpenAI(api_key=api_key)
     # Manual QA (retrieval + citing)
-    qa = ManualQA(
-        pdf_path=args.pdf_path,
-        cache_dir=args.manual_cache,
-        model=args.manual_model,
-    )
+    pdf_path = Path(args.pdf_path).expanduser().resolve()
+    if not pdf_path.exists():
+        print(f"Warning: Manual PDF not found at {pdf_path}. Use --pdf_path to set the correct path.")
+    else:
+        print(f"Manual PDF: {pdf_path}")
+    print(f"Manual retriever: {args.manual_retriever}")
+    if args.manual_retriever == "vectors":
+        qa = ManualQAVectors(
+            pdf_path=str(pdf_path),
+            cache_dir=args.manual_cache,
+            model=args.manual_model,
+            embedding_model=args.manual_embedding_model,
+        )
+    else:
+        qa = ManualQA(
+            pdf_path=str(pdf_path),
+            cache_dir=args.manual_cache,
+            model=args.manual_model,
+        )
 
     # Audio + VAD setup
     sample_rate = 16000
@@ -302,7 +354,7 @@ def main() -> None:
             last_bot_text = text
             last_tts_ts = time.time()
 
-    print("Car Assistant (ChatGPT) hands-free. Say 'Computer' / 'Computadora' to wake. Ctrl+C to quit.")
+    print("Car Assistant (ChatGPT) hands-free. Say 'Computer' or 'Instructions' to wake (Instructions = answer from GR86 manual). Ctrl+C to quit.")
     try:
         while True:
             # Cleanup finished players and temp files
@@ -367,12 +419,17 @@ def main() -> None:
                         if not transcript:
                             print("No speech detected.")
                             continue
-                        # Cooldown after TTS: ignore any transcript that arrives too soon after last bot speak
-                        if last_tts_ts > 0 and (time.time() - last_tts_ts) < 2.0:
-                            continue
 
                         lower = transcript.lower()
-                        print(f"User: {transcript}")
+                        print(f"User: {lower}")
+
+                        # Cooldown after TTS: ignore non-command transcripts to avoid echo; always allow command words (stop, silence, computer, etc.)
+                        def _is_command(tex: str) -> bool:
+                            tl = tex.lower()
+                            return any(kw in tl for kw in ("computer", "computadora", "instruction", "stop", "silence", "silencio", "detente", "callate", "status", "estatus"))
+                        # During cooldown skip non-commands — unless we're in manual mode waiting for the user's question
+                        if last_tts_ts > 0 and (time.time() - last_tts_ts) < 2.0 and not _is_command(transcript) and not manual_preference:
+                            continue
 
                         # If this transcript matches the last bot reply, ignore to avoid echo loops
                         if last_bot_text:
@@ -382,18 +439,43 @@ def main() -> None:
                                 continue
 
                         # If playback is ongoing: allow only stop playback commands; ignore others to avoid echo loops
-                        if current_player is not None:
-                            if "stop" in lower or "callate" in lower or "silencio" in lower:
-                                ack = "I wii stop listening" if args.lang.startswith("en") else "Estare en silencio"
-                                speak(ack, remember_bot=False)
-                            if current_player:
-                                current_player.terminate()
-                                current_player = None
-                            # Regardless, do not process further while playback active
+
+                        # Wake: "Instruction(s)" — answer from manual only (same turn if question included)
+                        if "instruction" in lower:
+                            print("-> Command: wake (instructions), manual_preference=True")
+                            is_awake = True
+                            is_listening = True
+                            manual_preference = True
+                            # If they said "instructions" + question in one go, answer from manual now
+                            q_rest = transcript.strip()
+                            ll = q_rest.lower()
+                            if ll.startswith("instructions"):
+                                q_rest = q_rest[13:].strip().lstrip(".,;:").strip()
+                            elif ll.startswith("instruction"):
+                                q_rest = q_rest[11:].strip().lstrip(".,;:").strip()
+                            if q_rest and len(q_rest) >= 3:
+                                print("-> Using manual QA:", q_rest[:60] + ("..." if len(q_rest) > 60 else ""))
+                                result = qa.ask(q_rest, top_k_pages=args.manual_topk, min_score=args.manual_min_score)
+                                pages_used = result.get("pages_used", [])
+                                answer = (result.get("answer", "") or "").strip()
+                                print("-> Manual pages_used:", pages_used)
+                                if _needs_fallback(answer, pages_used) and not answer:
+                                    answer = "I couldn't find that in the manual." if args.lang.startswith("en") else "No encontré eso en el manual."
+                                elif _needs_fallback(answer, pages_used):
+                                    print("-> Manual had no/few relevant pages; keeping manual answer.")
+                                print(f"Bot: {answer}")
+                                speak(answer, remember_bot=True)
+                                buffered_frames = []
+                                speech_active = False
+                                last_speech_ts = 0.0
+                            else:
+                                ack = "Ask your question and I'll look it up in the manual." if args.lang.startswith("en") else "Pregunta y lo busco en el manual."
+                                speak(ack, remember_bot=True)  # remember so echo of this ack is ignored and manual_preference stays True
                             continue
 
-                        # Wake word
+                        # Wake word: general listening
                         if "computer" in lower or "computadora" in lower:
+                            print("-> Command: wake (computer)")
                             is_awake = True
                             is_listening = True
                             manual_preference = False
@@ -402,26 +484,17 @@ def main() -> None:
                             continue
 
                         # Stop listening but stay awake
-                        if "silence" in lower or "silencio" in lower:
+                        if "silence" in lower or "silencio" in lower  or "stop" in lower  or "callate" in lower:
+                            print("-> Command: silence/silencio/stop/callate")
                             is_listening = False
                             manual_preference = False
-                            ack = "I wii stop listening" if args.lang.startswith("en") else "Estare en silencio"
+                            ack = "I will stop listening" if args.lang.startswith("en") else "Estare en silencio"
                             speak(ack, remember_bot=False)
-                            if current_player:
-                                current_player.terminate()
                             continue
 
-                        # Stop all
-                        if "stop" in lower or "detente" in lower:
-                            is_awake = False
-                            is_listening = False
-                            manual_preference = False
-                            if current_player:
-                                current_player.terminate()
-                            continue
-
-                        # Status command
+                         # Status command
                         if "status" in lower or "estatus" in lower:
+                            print("-> Command: status/estatus")
                             status_msg = f"Awake: {is_awake}, Listening: {is_listening}, ManualPref: {manual_preference}"
                             print(f"-> State: {status_msg}")
                             speak(
@@ -432,18 +505,6 @@ def main() -> None:
                             )
                             continue
 
-                        # Stop playback immediately command
-                        if "stop audio" in lower or "callate" in lower or "silencio ahora" in lower:
-                            if current_player:
-                                current_player.terminate()
-                                current_player = None
-                            if current_wav:
-                                try:
-                                    current_wav.unlink()
-                                except Exception:
-                                    pass
-                                current_wav = None
-                            continue
 
                         if not is_awake or not is_listening:
                             continue
@@ -455,12 +516,25 @@ def main() -> None:
                             manual_preference = True
 
                         if manual_preference:
-                            result = qa.ask(transcript, top_k_pages=args.manual_topk, min_score=args.manual_min_score)
-                            pages_used = result.get("pages_used", [])
-                            answer = (result.get("answer", "") or "").strip()
-                            if _needs_fallback(answer, pages_used):
-                                answer = chat_general(client, transcript, lang=args.lang)
-                            manual_preference = False
+                            print("-> manual_preference=True, using manual for this question")
+                            question_for_manual = (strip_manual_trigger(transcript) or transcript).strip()
+                            # No real question (only the trigger phrase)?
+                            if not question_for_manual or len(question_for_manual) < 3 or question_for_manual.rstrip(".!?,") == "":
+                                answer = "What would you like me to look up in the manual? Ask something like: what is the tire pressure, or how do I change the oil?" if args.lang.startswith("en") else "¿Qué quieres que busque en el manual? Pregunta por ejemplo: cuál es la presión de las llantas, o cómo cambiar el aceite."
+                                print("-> Manual requested but no question; prompting user.")
+                            else:
+                                print("-> Using manual QA:", question_for_manual[:60] + ("..." if len(question_for_manual) > 60 else ""))
+                                result = qa.ask(question_for_manual, top_k_pages=args.manual_topk, min_score=args.manual_min_score)
+                                pages_used = result.get("pages_used", [])
+                                answer = (result.get("answer", "") or "").strip()
+                                print("-> Manual pages_used:", pages_used)
+                                # In manual_preference mode, never replace with general chat — keep the manual's answer (even "couldn't find")
+                                if _needs_fallback(answer, pages_used):
+                                    # Keep manual answer so user knows we looked; only clarify if empty
+                                    if not answer:
+                                        answer = "I couldn't find that in the manual." if args.lang.startswith("en") else "No encontré eso en el manual."
+                                    print("-> Manual had no/few relevant pages; keeping manual answer (no general fallback).")
+                            # keep manual_preference True until user says Computer, Stop, Silence, etc.
                         else:
                             answer = chat_general(client, transcript, lang=args.lang)
 

@@ -1,0 +1,10 @@
+# Car Assistant GPT v3 — Python 3.8+
+# Install system deps first (e.g. on Jetson/Ubuntu): sudo apt-get install portaudio19-dev
+
+openai>=1.56.0,<2
+python-dotenv>=1.0.1
+pyaudio>=0.2.14
+pymupdf>=1.24.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+scipy>=1.11.0

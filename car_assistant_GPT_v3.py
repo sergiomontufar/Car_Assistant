@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Car Assistant using ChatGPT (cloud) with built-in STT (Whisper) and TTS.
 
@@ -16,7 +17,7 @@ Env:
 Usage:
   source ~/Rowdy/bin/activate
   # put your key in env OR a file (see below)
-  PYTHONPATH=. python -u car_assistant_GPT.py --record_seconds 10
+  PYTHONPATH=. python -u car_assistant_GPT_v3.py --record_seconds 10
 
 API key:
   - Preferred: set env OPENAI_API_KEY
@@ -45,7 +46,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-MANUAL_PATH = Path("~/Rowdy_chatbot/GR86 user manual.pdf").expanduser()
+MANUAL_PATH = Path(__file__).resolve().parent / "GR86 user manual.pdf"
 DEFAULT_API_KEY_FILE = Path("~/Rowdy_chatbot/OPEN_AI_KEY/key.txt").expanduser()
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent / ".env"
 
