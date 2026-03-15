@@ -1,2 +1,1 @@
-
-  # put your key in env OR a file (see below)
+PYTHONPATH=. python -u car_assistant_GPT_v3.py
